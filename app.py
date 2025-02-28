@@ -90,7 +90,9 @@ def match_data():
 
 
 
-
+@app.route('/')
+def home():
+    return "AllSports API is Running! Use /api/matches to get match data."
 
 
 
