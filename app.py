@@ -4,6 +4,7 @@ from time import time
 from flask_cors import CORS
 from bs4 import BeautifulSoup
 import re
+import os
 
 app = Flask(__name__)
 CORS(app)
