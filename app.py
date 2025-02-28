@@ -9,14 +9,13 @@ import os
 app = Flask(__name__)
 CORS(app)
 
-
 PORT = int(os.environ.get("PORT", 5001))
 mydomain = "http://127.0.0.1:" + str(PORT)
-
 
 old_time = 0
 raw_data = None
 parsed_matches = None
+cachelink = {}  # Ensure cachelink is defined globally
 
 def home_parse_matches(html_content):
     global cachelink
@@ -29,8 +28,10 @@ def home_parse_matches(html_content):
         try:
             link_element = match.select_one('a#match-live')
             link = link_element['href'] if link_element else ""
-            cachelink[re.sub(r'^(https?://[^/]+)', "", link)] = link
-            link = re.sub(r'^(https?://[^/]+)', mydomain, link)
+            if link:
+                cachelink[re.sub(r'^(https?://[^/]+)', "", link)] = link
+                link = re.sub(r'^(https?://[^/]+)', mydomain, link)
+            
             title = link_element['title'] if link_element else ""
             
             team1_name_element = match.select_one('.first-team .team-name')
@@ -39,10 +40,10 @@ def home_parse_matches(html_content):
             team1_logo_element = match.select_one('.first-team .team-logo img')
             team1_logo = team1_logo_element['src'] if team1_logo_element else ""
             
-            team2_name_element = match.select_one('.left-team .team-name')
+            team2_name_element = match.select_one('.second-team .team-name') or match.select_one('.left-team .team-name')
             team2_name = team2_name_element.text.strip() if team2_name_element else ""
             
-            team2_logo_element = match.select_one('.left-team .team-logo img')
+            team2_logo_element = match.select_one('.second-team .team-logo img') or match.select_one('.left-team .team-logo img')
             team2_logo = team2_logo_element['src'] if team2_logo_element else ""
             
             match_time_element = match.select_one('.match-timing #match-hour')
@@ -69,18 +70,26 @@ def home_parse_matches(html_content):
     return result
 
 def fetch_home_data():
-    """Fetch and cache data from epicsports.me"""
+    """Fetch and cache data from epicsports.online"""
     global old_time, raw_data, parsed_matches
     
     current_time = time()
     if raw_data is None or current_time - old_time > 120:  # Cache for 2 minutes
-        print("Fetching fresh data from epicsports.me")
+        print("Fetching fresh data from epicsports.online")
         old_time = current_time
-        raw_data = requests.get('https://www.epicsports.online/').text
-        parsed_matches = home_parse_matches(raw_data)
+        try:
+            response = requests.get('https://www.epicsports.online/', timeout=10)
+            if response.status_code == 200:
+                raw_data = response.text
+                parsed_matches = home_parse_matches(raw_data)
+            else:
+                print("Failed to fetch data: Status Code", response.status_code)
+                parsed_matches = []
+        except requests.RequestException as e:
+            print("Error fetching data:", e)
+            parsed_matches = []
     
     return raw_data, parsed_matches
-
 
 @app.route('/api/matches')
 def match_data():
@@ -88,57 +97,51 @@ def match_data():
     _, matches = fetch_home_data()
     return jsonify(matches)
 
-
-
 @app.route('/')
 def home():
     return "AllSports API is Running! Use /api/matches to get match data."
 
-
-
-
 def get_match_lineups_and_links(url):
-    response = requests.get(url)
-    if response.status_code != 200:
-        return "Failed to fetch the page"
-    soup = BeautifulSoup(response.content, 'html.parser')
-    lineups = []
-    links = []
-
-    lineup_elements = soup.find_all('div', class_='post-share text-center m-1')
-    for element in lineup_elements:
-        lineup_text = element.get_text(strip=True)
-        if "XI:" in lineup_text:
-            lineups.append(lineup_text)
-
-    link_elements = soup.find_all('a', class_='fa fa-play')
-    for element in link_elements:
-        link = element.get('href')
-        if link:
-            links.append(link)
-
-    return {
-        'lineups': lineups,
-        'links': links
-    }
-
+    try:
+        response = requests.get(url, timeout=10)
+        if response.status_code != 200:
+            return "Failed to fetch the page"
+        soup = BeautifulSoup(response.content, 'html.parser')
+        lineups = []
+        links = []
+        
+        lineup_elements = soup.find_all('div', class_='post-share text-center m-1')
+        for element in lineup_elements:
+            lineup_text = element.get_text(strip=True)
+            if "XI:" in lineup_text:
+                lineups.append(lineup_text)
+        
+        link_elements = soup.find_all('a', class_='fa fa-play')
+        for element in link_elements:
+            link = element.get('href')
+            if link:
+                links.append(link)
+        
+        return {'lineups': lineups, 'links': links}
+    except requests.RequestException as e:
+        print("Error fetching lineup data:", e)
+        return {'lineups': [], 'links': []}
 
 def fetch_page_data(path):
-    match_data = get_match_lineups_and_links(cachelink[path])
-    return render_template('pages.html', lineups=match_data['lineups'], links=match_data['links'])
+    if path not in cachelink:
+        fetch_home_data()
+    if path in cachelink:
+        match_data = get_match_lineups_and_links(cachelink[path])
+        return render_template('pages.html', lineups=match_data['lineups'], links=match_data['links'])
+    return "Page not found", 404
 
-
-
-pages = dict()
+pages = {}
 @app.route('/p/<path:path>')
 def proxy(path):
     path = "/p/" + path
     global pages
     if path not in pages or time() - pages[path][0] > 120:
-        if path not in cachelink:
-            fetch_home_data()
         pages[path] = [time(), fetch_page_data(path)]
-
     return pages[path][1]
 
 if __name__ == '__main__':
