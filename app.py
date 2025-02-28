@@ -99,7 +99,7 @@ def match_data():
 
 @app.route('/')
 def home():
-    return "AllSports API is Running! Use /api/matches to get match data."
+    return render_template("index.html")
 
 def get_match_lineups_and_links(url):
     try:
